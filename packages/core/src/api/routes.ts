@@ -194,6 +194,68 @@ async function handleFallback(
 }
 
 /**
+ * Sanitize incomplete assistant messages caused by user cancellation
+ * Detects tool_use with invalid JSON (incomplete) and replaces with cancellation notice
+ * This prevents models from trying to "complete" the incomplete JSON and causing hallucinations
+ *
+ * @param messages - Array of messages to sanitize
+ * @param logger - Optional logger for warning messages
+ * @returns Object with sanitized messages and count of replacements made
+ */
+function sanitizeIncompleteMessages(
+  messages: any[],
+  logger?: any
+): { sanitized: any[], replaced: number } {
+  let replacedCount = 0;
+  const sanitized: any[] = [];
+
+  messages.forEach((msg, idx) => {
+    // Skip messages that are not from assistant or don't have array content
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) {
+      sanitized.push(msg);
+      return;
+    }
+
+    // Check if there are tool_calls with invalid input (incomplete JSON)
+    const hasInvalidToolCall = msg.content.some((c: any) => {
+      // Look for tool_use with input
+      if (c?.type === "tool_use" && c?.input) {
+        // If input is a string, try to parse JSON
+        if (typeof c.input === "string") {
+          try {
+            JSON.parse(c.input);
+            return false;  // Valid JSON
+          } catch {
+            return true;  // Invalid JSON - indicates cancellation
+          }
+        }
+      }
+      return false;
+    });
+
+    if (hasInvalidToolCall) {
+      // REPLACE the message with a cancellation notice
+      sanitized.push({
+        role: "assistant",
+        content: "[Previous tool use was interrupted by user cancellation]"
+      });
+      replacedCount++;
+
+      // Log for debugging
+      logger?.warn({
+        messageIndex: idx,
+        role: msg.role,
+        contentPreview: JSON.stringify(msg.content).substring(0, 200)
+      }, "Replaced incomplete assistant message with cancellation notice");
+    } else {
+      sanitized.push(msg);
+    }
+  });
+
+  return { sanitized, replaced: replacedCount };
+}
+
+/**
  * Process request transformer chain
  * Sequentially execute transformRequestOut, provider transformers, model-specific transformers
  * Returns processed request body, config, and flag indicating whether to skip transformers
@@ -208,6 +270,24 @@ async function processRequestTransformers(
   let requestBody = body;
   let config: any = {};
   let bypass = false;
+
+  // Sanitize incomplete messages caused by user cancellation
+  // This runs on ALL requests BEFORE any transformer processing
+  // Independent of bypass mode - we always want to clean incomplete messages
+  if (requestBody.messages && Array.isArray(requestBody.messages)) {
+    const { sanitized, replaced } = sanitizeIncompleteMessages(
+      requestBody.messages,
+      context?.req?.log
+    );
+    requestBody.messages = sanitized;
+
+    if (replaced > 0) {
+      context?.req?.log.warn(
+        { replacedCount: replaced },
+        "Sanitized incomplete assistant messages (replaced with cancellation notice)"
+      );
+    }
+  }
 
   // Check if transformers should be bypassed (passthrough mode)
   bypass = shouldBypassTransformers(provider, transformer, body);

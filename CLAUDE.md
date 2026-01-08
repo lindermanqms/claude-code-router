@@ -246,3 +246,84 @@ ui (standalone frontend application)
 
 - Main configuration example: Complete example in README.md
 - Custom router example: `custom-router.example.js`
+
+## Testing Protocol (Protocolo de Teste)
+
+### Server Management
+
+When testing changes to the router, always use the **local development build** instead of the global installation:
+
+```bash
+# Stop any running global server
+ccr stop
+
+# Verify server is stopped
+ccr status
+
+# Build the local packages
+pnpm build:core
+pnpm build:cli
+
+# Start the local development server
+node packages/cli/dist/cli.js start &
+# or in background: node packages/cli/dist/cli.js start >/dev/null 2>&1 &
+
+# Verify server is running
+ccr status
+```
+
+### Testing with Specific Model
+
+The default test model is `local-proxy,qwen3-coder-plus` with API key `sk-dummy`:
+
+```bash
+# Create test request file
+cat > /tmp/test_request.json << 'EOF'
+{
+  "model": "local-proxy,qwen3-coder-plus",
+  "max_tokens": 100,
+  "messages": [
+    {"role": "user", "content": "Teste"},
+    {
+      "role": "assistant",
+      "content": [{
+        "type": "tool_use",
+        "id": "toolu_12345",
+        "name": "search",
+        "input": "{"
+      }]
+    },
+    {"role": "user", "content": "Qual a capital do Brasil?"}
+  ]
+}
+EOF
+
+# Send test request
+curl -s -X POST http://127.0.0.1:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: sk-dummy" \
+  -d @/tmp/test_request.json
+```
+
+### Log Verification
+
+After testing, verify the logs to confirm the behavior:
+
+```bash
+# Find the most recent log file
+ls -lt ~/.claude-code-router/logs/*.log | head -1
+
+# Read last 50 lines (use windows of 5-10 lines for large files)
+tail -50 ~/.claude-code-router/logs/ccr-YYYYMMDDHHMMSS.log
+
+# Search for specific patterns
+grep -E "(Sanitized|Replaced|incomplete)" ~/.claude-code-router/logs/ccr-*.log
+```
+
+### Important Notes
+
+1. **Always use local build**: The global `ccr` command may not include your latest changes
+2. **Stop before starting**: Always stop any running server before starting a new one
+3. **Port 3456**: The server runs on port 3456 by default
+4. **Large logs**: Log files can be very large - read in windows of 5-10 lines
+5. **API key**: Use `sk-dummy` for local testing with the local-proxy provider
